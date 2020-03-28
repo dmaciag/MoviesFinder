@@ -11,6 +11,7 @@ namespace MovieFinder.Models
         public string Runtime { get; set; }
         public string Genre { get; set; }
         public string Year { get; set; }
+        public string Type { get; set; }
         
         public string Released { get; set; }
         public DateTime LastUpdated { get; set; }

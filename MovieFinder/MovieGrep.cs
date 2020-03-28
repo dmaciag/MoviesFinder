@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Data;
 using System.Data.SqlClient;
 using System.Globalization;
 using System.IO;
@@ -31,11 +32,11 @@ namespace MovieFinder
         private static readonly string ReplaceImdbIdFlag = "ReplaceImdbIdFlag";
         private static readonly string APIKeyReplaceFlag = "APIKeyReplaceFlag";
 
-        private readonly string[] OmdbApiKeys = new string[] {"7bf4c1bb","1efc2591","ae793fb6","8282b935","23e3cce6" };
+        private readonly string[] OmdbApiKeys = new string[] {"396cfc8d","b3b1c3ff","23e3cce6","8282b935", "7bf4c1bb","1efc2591","ae793fb6"};
         private readonly string OmdbApiUrlBase = $"https://www.omdbapi.com/?i={ReplaceImdbIdFlag}&apikey={APIKeyReplaceFlag}";
 
         private readonly string _connectionString = "Data Source=localhost;Initial Catalog=imdb;User ID=root;Password=";
-        private readonly string FilePathToImdbDataSet = @"C:\Users\JOHNC\Documents\Local_Coding_Projects\C#\MovieFinder\MovieFinder\movie_dataset_imdb\data.tsv";
+        private readonly string FilePathToImdbDataSet = @"C:\Users\yas\Documents\coding_projects\C#\MoviesFinder\MovieFinder\movie_dataset_imdb\data.tsv";
 
         //https://datasets.imdbws.com/title.ratings.tsv.gz
         public void Run()
@@ -50,45 +51,61 @@ namespace MovieFinder
             }
 
             var moviesInDb = GetMoviesFromDb();
-            var movies = GetMoviesFromImdbApi(movieParamList);
-
-            if (movies == null || movies.Count == 0)
+            RemoveAlreadyExsitingItemsFromSearch(movieParamList, moviesInDb);
+            
+            MySqlConnection conn = new MySqlConnection(_connectionString);
+            conn.Open();
+            foreach (var movie in GetMoviesFromImdbApi(movieParamList))
             {
-                Logger.Warn("Bad movie data from IMDB. Not proceeding with Save.");
-                return;
+                Parse(movie, conn, moviesInDb);
             }
-            else
-                Parse(movies, moviesInDb);
 
+            conn.Close();
+            Console.WriteLine("Done everything.");
         }
 
-        private void Parse(IList<Movie> moviesImdb, Dictionary<string, Movie> moviesDb)
+        private void RemoveAlreadyExsitingItemsFromSearch(IList<MovieParam> movieParamList, Dictionary<string, Movie> moviesInDb)
         {
-            Logger.Info($"Cross checking {moviesImdb.Count} IMDB vs {moviesDb.Count} DB movies.");
+            IList<int> imdbIndxsToSkipInsert = new List<int>();
             
-            
+            if (true)
+            {
+                int indx = 0;
+                foreach (var movieParam in movieParamList)
+                {
+                    if (moviesInDb.ContainsKey(movieParam.ImdbId))
+                    {
+                        imdbIndxsToSkipInsert.Add(indx);
+                    }
+
+                    indx++;
+                }
+
+                for (int i = imdbIndxsToSkipInsert.Count-1; i>=0 ; i--)
+                {
+                    movieParamList.RemoveAt(imdbIndxsToSkipInsert[i]);
+                }
+            }
+        }
+
+        private void Parse(Movie movieImdb, MySqlConnection conn, Dictionary<string, Movie> moviesDb)
+        {
             int updateRecordCount = 0;
             int insertRecordCount = 0;
             
-            MySqlConnection conn = null;
             try
             {
-                conn = new MySqlConnection(_connectionString);
-                conn.Open();
-                foreach (var movieImdb in moviesImdb)
+                if (moviesDb.TryGetValue(movieImdb.ImdbId, out Movie movieInDb) &&
+                    movieInDb.LastUpdated.AddDays(7) < DateTime.Now)
                 {
-                    if (moviesDb.TryGetValue(movieImdb.ImdbId, out Movie movieInDb) &&
-                        movieInDb.LastUpdated.AddDays(7) < DateTime.Now)
-                    {
-                        Logger.Debug($"Attempting to update movie record for ImdbId:{movieImdb.ImdbId}.");
+                    Logger.Debug($"Attempting to update movie record for ImdbId:{movieImdb.ImdbId}.");
 
-                        if (UpdateMovieRecord(movieImdb, conn))
-                            updateRecordCount++;
-                    }
-
-                    if (InsertMovieRecord(movieImdb, conn))
-                        insertRecordCount++;
+                    if (UpdateMovieRecord(movieImdb, conn))
+                        updateRecordCount++;
                 }
+
+                if (InsertMovieRecord(movieImdb, conn))
+                    insertRecordCount++;
             }
             catch (Exception ex)
             {
@@ -151,76 +168,67 @@ namespace MovieFinder
         
         
         
-        private IList<Movie> GetMoviesFromImdbApi(IList<MovieParam> movieParams)
+        private IEnumerable<Movie> GetMoviesFromImdbApi(IList<MovieParam> movieParams)
         {
-            IList<Movie> movies = new List<Movie>();
-
-            try
-            {
-                int maxNumKeys = OmdbApiKeys.Length;
-                int currentIndexKey = 0;
-                int _maxRetryCount = 0;
-                string currentApiKey = OmdbApiKeys[currentIndexKey];
-
-                HashSet<int> pctTrackerSet = new HashSet<int>();
-                for (int i=0;i<movieParams.Count; i++)
-                {
-                    PrintStatus(i, movieParams.Count, pctTrackerSet);
-                    
-                    if (currentIndexKey >= maxNumKeys)
-                        continue;
-                    
-                    Thread.Sleep(15);
-                    MovieParam currentMovieParam = movieParams[i];
-                    int retryCount = 0;
-                    RequestStatus requestStatus = RequestStatus.Fail;
-
-                    Movie movie = TryGetMovieFromImdbHttp(currentMovieParam, currentApiKey, ref requestStatus);
-                    
-                    while (requestStatus == RequestStatus.Fail && retryCount < _maxRetryCount)
-                    {
-                        Thread.Sleep(100);
-                        Logger.Info($"Retrying search for ImdbId:{currentMovieParam.ImdbId} due to {requestStatus}.");
-                        movie = TryGetMovieFromImdbHttp(currentMovieParam, currentApiKey,  ref requestStatus);
-                        retryCount++;
-                    }
-                    
-                    while (requestStatus == RequestStatus.HitApiLimit && currentIndexKey < maxNumKeys - 1)
-                    {
-                        currentIndexKey++;
-                        Logger.Info($"API Limit reached for ApiKey:{currentApiKey}. Trying ApiKey:{OmdbApiKeys[currentIndexKey]}.");
-                        currentApiKey = OmdbApiKeys[currentIndexKey];
-                        Logger.Info($"Retrying search for ImdbId:{currentMovieParam.ImdbId} due to {requestStatus} with ApiKey:{currentApiKey}.");
-                        movie = TryGetMovieFromImdbHttp(currentMovieParam, currentApiKey,  ref requestStatus);
-                    }
-
-                    if (requestStatus == RequestStatus.HitApiLimit && currentIndexKey == maxNumKeys - 1)
-                    {
-                        currentIndexKey++; //last one
-                    }
-
-                    retryCount = 0;
-                    while (requestStatus == RequestStatus.Wait && retryCount < _maxRetryCount)
-                    {
-                        Logger.Info("Waiting for 5 seconds before retrying.");
-                        retryCount++;
-                        Thread.Sleep(5000);
-                    }
-
-                    if (movie != null)
-                    {
-                        movies.Add(movie);
-                    }
-                    else
-                        Logger.Warn($"Skipping movie with ImdbId:{currentMovieParam.ImdbId} due to reason:{requestStatus}.");
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Debug(Convert.ToString(ex));
-            }
+            IEnumerable<Movie> movies = new List<Movie>();
             
-            return movies;
+            int maxNumKeys = OmdbApiKeys.Length;
+            int currentIndexKey = 0;
+            int _maxRetryCount = 0;
+            string currentApiKey = OmdbApiKeys[currentIndexKey];
+
+            HashSet<int> pctTrackerSet = new HashSet<int>();
+            for (int i=0;i<movieParams.Count; i++)
+            {
+                PrintStatus(i, movieParams.Count, pctTrackerSet);
+                
+                if (currentIndexKey >= maxNumKeys)
+                    continue;
+                
+                Thread.Sleep(15);
+                MovieParam currentMovieParam = movieParams[i];
+                int retryCount = 0;
+                RequestStatus requestStatus = RequestStatus.Fail;
+
+                Movie movie = TryGetMovieFromImdbHttp(currentMovieParam, currentApiKey, ref requestStatus);
+                
+                while (requestStatus == RequestStatus.Fail && retryCount < _maxRetryCount)
+                {
+                    Thread.Sleep(100);
+                    Logger.Info($"Retrying search for ImdbId:{currentMovieParam.ImdbId} due to {requestStatus}.");
+                    movie = TryGetMovieFromImdbHttp(currentMovieParam, currentApiKey,  ref requestStatus);
+                    retryCount++;
+                }
+                
+                while (requestStatus == RequestStatus.HitApiLimit && currentIndexKey < maxNumKeys - 1)
+                {
+                    currentIndexKey++;
+                    Logger.Info($"API Limit reached for ApiKey:{currentApiKey}. Trying ApiKey:{OmdbApiKeys[currentIndexKey]}.");
+                    currentApiKey = OmdbApiKeys[currentIndexKey];
+                    Logger.Info($"Retrying search for ImdbId:{currentMovieParam.ImdbId} due to {requestStatus} with ApiKey:{currentApiKey}.");
+                    movie = TryGetMovieFromImdbHttp(currentMovieParam, currentApiKey,  ref requestStatus);
+                }
+
+                if (requestStatus == RequestStatus.HitApiLimit && currentIndexKey == maxNumKeys - 1)
+                {
+                    currentIndexKey++; //last one
+                }
+
+                retryCount = 0;
+                while (requestStatus == RequestStatus.Wait && retryCount < _maxRetryCount)
+                {
+                    Logger.Info("Waiting for 5 seconds before retrying.");
+                    retryCount++;
+                    Thread.Sleep(5000);
+                }
+
+                if (movie != null)
+                {
+                    yield return movie;
+                }
+                else
+                    Logger.Warn($"Skipping movie with ImdbId:{currentMovieParam.ImdbId} due to reason:{requestStatus}.");
+            }
         }
 
         private void PrintStatus(int i, int maxCount, HashSet<int> pctTrackerSet)
@@ -241,6 +249,11 @@ namespace MovieFinder
                 return false;
             }
 
+            if (conn.State == ConnectionState.Closed)
+            {
+                conn.Open();
+            }
+
             if (movie == null)
             {
                 Logger.Error("Null movie, not saving.");
@@ -251,8 +264,8 @@ namespace MovieFinder
             {
                 MySqlCommand cmd = new MySqlCommand();
                 cmd.Connection = conn;
-                cmd.CommandText = "INSERT INTO movies(ImdbId,Title,Plot,Rating,VoteCount,Language,Country,Genre,Year,Released,Runtime,LastUpdated) " +
-                                  "VALUES(@ImdbId,@Title,@Plot,@Rating,@VoteCount,@Language,@Country,@Genre,@Year,@Released,@Runtime,@LastUpdated)";
+                cmd.CommandText = "INSERT INTO movies(ImdbId,Title,Plot,Rating,VoteCount,Language,Country,Genre,Year,Released,Runtime,Type,LastUpdated) " +
+                                  "VALUES(@ImdbId,@Title,@Plot,@Rating,@VoteCount,@Language,@Country,@Genre,@Year,@Released,@Runtime,@Type,@LastUpdated)";
 
                 cmd.Parameters.AddWithValue("@ImdbId", movie.ImdbId);
                 cmd.Parameters.AddWithValue("@Title", movie.Title);
@@ -265,6 +278,7 @@ namespace MovieFinder
                 cmd.Parameters.AddWithValue("@Runtime", movie.Runtime);
                 cmd.Parameters.AddWithValue("@Released", movie.Released);
                 cmd.Parameters.AddWithValue("@Year", movie.Year);
+                cmd.Parameters.AddWithValue("@Type", movie.Type);
                 cmd.Parameters.AddWithValue("@LastUpdated", DateTime.Now);
 
                 cmd.ExecuteNonQuery();
@@ -298,22 +312,23 @@ namespace MovieFinder
                 cmd.Connection = conn;
                 cmd.CommandText = "UPDATE movies " +
                                   "SET Title=@Title,Description=@Description,Rating=@Rating,VoteCount=@VoteCount,LastUpdated=@LastUpdated," +
-                                  "Language=@Language,Country=@Country,Genre=@Genre,Runtime=@Runtime,Released=@Released,Year=@Year" +
+                                  "Language=@Language,Country=@Country,Genre=@Genre,Runtime=@Runtime,Released=@Released,Year=@Year,Type=@Type" +
                                   "WHERE ImbdId=@ImbdId";
 
-                cmd.Parameters.AddWithValue("@ImbdId", MySqlDbType.VarChar).Value = movie.ImdbId;
-                cmd.Parameters.AddWithValue("@Title", MySqlDbType.VarChar).Value = movie.Title;
-                cmd.Parameters.AddWithValue("@Plot", MySqlDbType.VarChar).Value = movie.Plot;
-                cmd.Parameters.AddWithValue("@Rating", MySqlDbType.Decimal).Value = movie.Rating;
-                cmd.Parameters.AddWithValue("@VoteCount", MySqlDbType.VarChar).Value = movie.VoteCount;
-                cmd.Parameters.AddWithValue("@LastUpdated", MySqlDbType.DateTime).Value = DateTime.Now;
-                cmd.Parameters.AddWithValue("@Language", MySqlDbType.VarChar).Value = movie.Language;
-                cmd.Parameters.AddWithValue("@Country", MySqlDbType.VarChar).Value = movie.Country;
-                cmd.Parameters.AddWithValue("@Genre", MySqlDbType.VarChar).Value = movie.Genre;
-                cmd.Parameters.AddWithValue("@Runtime", MySqlDbType.VarChar).Value = movie.Runtime;
-                cmd.Parameters.AddWithValue("@Released", MySqlDbType.VarChar).Value = movie.Released;
-                cmd.Parameters.AddWithValue("@Year", MySqlDbType.VarChar).Value = movie.Year;
-
+                cmd.Parameters.AddWithValue("@ImbdId", movie.ImdbId);
+                cmd.Parameters.AddWithValue("@Title", movie.Title);
+                cmd.Parameters.AddWithValue("@Plot", movie.Plot);
+                cmd.Parameters.AddWithValue("@Rating", movie.Rating);
+                cmd.Parameters.AddWithValue("@VoteCount", movie.VoteCount);
+                cmd.Parameters.AddWithValue("@LastUpdated", DateTime.Now);
+                cmd.Parameters.AddWithValue("@Language", movie.Language);
+                cmd.Parameters.AddWithValue("@Country", movie.Country);
+                cmd.Parameters.AddWithValue("@Genre", movie.Genre);
+                cmd.Parameters.AddWithValue("@Runtime", movie.Runtime);
+                cmd.Parameters.AddWithValue("@Released", movie.Released);
+                cmd.Parameters.AddWithValue("@Year", movie.Year);
+                cmd.Parameters.AddWithValue("@Type", movie.Type);
+                
                 cmd.ExecuteNonQuery();
                 return true;
             }
@@ -354,7 +369,7 @@ namespace MovieFinder
                     movie.Released = httpMovieData.Released;
                     movie.Runtime = httpMovieData.Runtime;
                     movie.Title = httpMovieData.Title;
-
+                    movie.Type = httpMovieData.Type;
                     movie.ImdbId = movieParam.ImdbId;
                     movie.Rating = movieParam.Rating;
                     movie.VoteCount = movieParam.VoteCount;
