@@ -79,6 +79,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Enums\RequestStatus.cs" />
     <Compile Include="Models\Movie.cs" />
     <Compile Include="Models\MovieParam.cs" />
     <Compile Include="MovieGrep.cs" />

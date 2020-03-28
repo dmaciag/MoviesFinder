@@ -10,6 +10,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using log4net.Repository.Hierarchy;
+using MovieFinder.Enums;
 using MovieFinder.Models;
 using MySql.Data.MySqlClient;
 using Newtonsoft.Json;
@@ -18,14 +19,6 @@ using Org.BouncyCastle.Bcpg;
 
 namespace MovieFinder
 {
-    public enum RequestStatus
-    {
-        Fail,
-        HitApiLimit,
-        Wait,
-        Success
-    }
-    
     public class MovieGrep
     {
         private static readonly log4net.ILog Logger = log4net.LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
@@ -36,7 +29,7 @@ namespace MovieFinder
         private readonly string OmdbApiUrlBase = $"https://www.omdbapi.com/?i={ReplaceImdbIdFlag}&apikey={APIKeyReplaceFlag}";
 
         private readonly string _connectionString = "Data Source=localhost;Initial Catalog=imdb;User ID=root;Password=";
-        private readonly string FilePathToImdbDataSet = @"C:\Users\yas\Documents\coding_projects\C#\MoviesFinder\MovieFinder\movie_dataset_imdb\data.tsv";
+        private readonly string FilePathToImdbDataSet = @"C:\Users\JOHNC\Documents\coding_projects\C#\MoviesFinder\MovieFinder\movie_dataset_imdb\data.tsv";
 
         //https://datasets.imdbws.com/title.ratings.tsv.gz
         public void Run()
@@ -165,9 +158,7 @@ namespace MovieFinder
 
             return moviesFromDb;
         }
-        
-        
-        
+
         private IEnumerable<Movie> GetMoviesFromImdbApi(IList<MovieParam> movieParams)
         {
             IEnumerable<Movie> movies = new List<Movie>();
